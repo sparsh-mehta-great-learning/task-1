@@ -4,5 +4,4 @@ openai
 transformers
 torch
 pydub
-pyaudio
 git+https://github.com/openai/whisper.git
