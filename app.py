@@ -148,7 +148,7 @@ def main():
     st.title("Mentor Evaluation System")
 
     # Input OpenAI API key
-    api_key = st.text_input("Enter your OpenAI API Key", type="password")
+    api_key = os.environ.get('OPENAI_API_KEY')
 
     if not api_key:
         st.warning("Please enter your OpenAI API key to proceed.")
