@@ -1000,15 +1000,17 @@ class MentorEvaluator:
                     audio_features = self.feature_extractor.extract_features(processed_audio)
                     tracker.next_step()
                     
-                    # Step 4: Get transcript - Modified to always transcribe if no transcript file
+                    # Step 4: Get transcript - Modified to handle 3-argument progress callback
                     tracker.update(0.6, "Processing transcript")
                     if transcript_file:
                         transcript = transcript_file.getvalue().decode('utf-8')
                     else:
-                        # Perform transcription using the processed audio
+                        # Update progress callback to handle 3 arguments
                         tracker.update(0.6, "Transcribing audio")
-                        transcript = self._transcribe_audio(processed_audio, progress_callback=lambda p, m: 
-                            tracker.update(0.6 + p * 0.2, m))
+                        transcript = self._transcribe_audio(
+                            processed_audio, 
+                            lambda p, m, extra=None: tracker.update(0.6 + p * 0.2, m)
+                        )
                     tracker.next_step()
                     
                     # Step 5: Analyze content
@@ -1043,16 +1045,6 @@ class MentorEvaluator:
                     except Exception as e:
                         logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
 
-            # Add memory management
-            try:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception as e:
-                logger.warning(f"Failed to clean up memory: {e}")
-
-            return results
-
         except Exception as e:
             logger.error(f"Error in video evaluation: {e}")
             # Clean up UI elements on error
@@ -1068,17 +1060,6 @@ class MentorEvaluator:
             if progress_callback:
                 progress_callback(0.1, "Loading transcription model...")
 
-            # Create status columns for detailed metrics
-            status_cols = st.columns(4)
-            with status_cols[0]:
-                batch_status = st.empty()
-            with status_cols[1]:
-                time_status = st.empty()
-            with status_cols[2]:
-                progress_status = st.empty()
-            with status_cols[3]:
-                segment_status = st.empty()
-
             # Check if GPU is available and set device accordingly
             device = "cuda" if torch.cuda.is_available() else "cpu"
             compute_type = "float16" if device == "cuda" else "int8"
@@ -1088,82 +1069,90 @@ class MentorEvaluator:
             
             # Check cache first
             if cache_key in st.session_state:
-                logger.info("Using cached transcription")
+                logger.info("Using cached transcription") 
                 if progress_callback:
                     progress_callback(1.0, "Retrieved from cache")
                 return st.session_state[cache_key]
 
+            # Add validation for audio file
+            if not os.path.exists(audio_path):
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            
+            try:
+                audio_info = sf.info(audio_path)
+                if audio_info.samplerate != 16000:
+                    logger.warning(f"Audio sample rate is {audio_info.samplerate}Hz, expected 16000Hz")
+            except Exception as e:
+                logger.error(f"Error checking audio file: {e}")
+                raise ValueError(f"Invalid audio file: {str(e)}")
+
             if progress_callback:
                 progress_callback(0.2, "Initializing model...")
 
-            # Initialize model with optimized settings
-            model = WhisperModel(
-                "small",
-                device=device,
-                compute_type=compute_type,
-                download_root=self.model_cache_dir,
-                local_files_only=False,
-                cpu_threads=4,
-                num_workers=2
-            )
+            # Initialize model with optimized settings and proper error handling
+            try:
+                model = WhisperModel(
+                    "small",
+                    device=device,
+                    compute_type=compute_type,
+                    download_root=self.model_cache_dir,
+                    local_files_only=False,
+                    cpu_threads=4,
+                    num_workers=2
+                )
+            except Exception as e:
+                logger.error(f"Error initializing Whisper model: {e}")
+                raise RuntimeError(f"Failed to initialize transcription model: {str(e)}")
 
             if progress_callback:
                 progress_callback(0.3, "Starting transcription...")
 
             # Get audio duration for progress calculation
-            audio_info = sf.info(audio_path)
             total_duration = audio_info.duration
 
-            # Remove the preview pass and directly transcribe with optimized VAD settings
-            segments, _ = model.transcribe(
-                audio_path,
-                beam_size=5,
-                word_timestamps=True,
-                vad_filter=True,
-                vad_parameters=dict(
-                    min_silence_duration_ms=500,  # Reduced from 1000
-                    speech_pad_ms=100,
-                    threshold=0.3,  # More sensitive threshold
-                    min_speech_duration_ms=250  # Added minimum speech duration
-                ),
-                language='en'  # Specify language if known
-            )
+            # Transcribe with optimized VAD settings and error handling
+            try:
+                segments, _ = model.transcribe(
+                    audio_path,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=True,
+                    vad_parameters=dict(
+                        min_silence_duration_ms=500,
+                        speech_pad_ms=100,
+                        threshold=0.3,
+                        min_speech_duration_ms=250
+                    ),
+                    language='en'
+                )
+            except Exception as e:
+                logger.error(f"Error during transcription: {e}")
+                raise RuntimeError(f"Transcription failed: {str(e)}")
 
-            # Start timing for ETA calculation
-            start_time = time.time()
-            last_update_time = start_time
-            update_interval = 0.5  # Update UI every 0.5 seconds
-
-            # Process segments and combine transcript
+            # Process segments with better error handling and validation
             transcript_parts = []
-            total_segments = sum(1 for _ in segments)  # Count segments once
-            batch_size = 10  # Number of segments per batch
-            current_batch = 1
-            total_batches = (total_segments + batch_size - 1) // batch_size
+            segments = list(segments)  # Convert generator to list
+            total_segments = len(segments)
+            batch_size = 10
+            
+            if total_segments == 0:
+                logger.warning("No speech segments detected")
+                raise ValueError("No speech detected in audio file")
 
             for i, segment in enumerate(segments, 1):
-                transcript_parts.append(segment.text)
+                if segment.text:  # Only add non-empty segments
+                    # Validate segment text
+                    cleaned_text = segment.text.strip()
+                    if cleaned_text:
+                        transcript_parts.append(cleaned_text)
                 
-                # Update progress less frequently
-                current_time = time.time()
-                if current_time - last_update_time >= update_interval:
+                # Update progress less frequently for better performance
+                if i % 5 == 0 or i == total_segments:
                     progress = min(i / total_segments, 1.0)
-                    progress = 0.3 + (progress * 0.6)  # Scale progress between 30% and 90%
+                    progress = 0.3 + (progress * 0.6)
                     
-                    elapsed_time = current_time - start_time
-                    if progress > 0:
-                        estimated_total = elapsed_time / progress
-                        remaining_time = estimated_total - elapsed_time
-                    else:
-                        remaining_time = 0
-
                     current_batch = (i - 1) // batch_size + 1
-
-                    # Update status columns with detailed metrics
-                    batch_status.markdown(f"🎯 **Batch**\n{current_batch}/{total_batches}")
-                    time_status.markdown(f"⏱️ **Time**\n{int(segment.start)}s/{int(total_duration)}s")
-                    progress_status.markdown(f"📊 **Progress**\n{progress * 100:.1f}%")
-                    segment_status.markdown(f"⌛ **ETA**\n{int(remaining_time)}s")
+                    total_batches = (total_segments + batch_size - 1) // batch_size
 
                     if progress_callback:
                         progress_callback(
@@ -1171,17 +1160,12 @@ class MentorEvaluator:
                             f"Transcribing Batch {current_batch}/{total_batches}",
                             f"Processing segment {i} of {total_segments}"
                         )
-                    
-                    last_update_time = current_time
 
-            # Clean up status displays
-            for col in status_cols:
-                with col:
-                    st.empty()
+            # Validate final transcript
+            transcript = ' '.join(transcript_parts)
+            if not transcript.strip():
+                raise ValueError("Transcription produced empty result")
 
-            # Combine segments into final transcript with smart overlap handling
-            transcript = self._merge_transcripts(transcript_parts)
-            
             # Cache the result
             st.session_state[cache_key] = transcript
 
