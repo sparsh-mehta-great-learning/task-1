@@ -1,0 +1,6 @@
+[build]
+builder = "python"
+version = "3.11"
+
+[startup]
+command = "bash startup.sh"
