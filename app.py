@@ -171,7 +171,7 @@ class AudioFeatureExtractor:
             rms = librosa.feature.rms(y=audio)[0]
             mean_amplitude = float(np.mean(rms)) * 100  # Scale for better readability
             
-            # Calculate pitch features using pyin
+            # Enhanced pitch analysis for monotone detection
             f0, voiced_flag, _ = librosa.pyin(
                 audio,
                 sr=sr,
@@ -183,42 +183,66 @@ class AudioFeatureExtractor:
             # Filter out zero and NaN values
             valid_f0 = f0[np.logical_and(voiced_flag == 1, ~np.isnan(f0))]
             
-            # Improved pause detection
-            S = np.abs(librosa.stft(audio))
-            db = librosa.amplitude_to_db(S, ref=np.max)
-            frame_length = 2048  # ~128ms at 16kHz
-            hop_length = 512     # ~32ms at 16kHz
+            # Calculate pitch statistics for monotone detection
+            pitch_mean = float(np.mean(valid_f0)) if len(valid_f0) > 0 else 0
+            pitch_std = float(np.std(valid_f0)) if len(valid_f0) > 0 else 0
+            pitch_range = float(np.ptp(valid_f0)) if len(valid_f0) > 0 else 0  # Peak-to-peak range
             
-            # Calculate energy in dB
-            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+            # Calculate pitch variation coefficient (normalized standard deviation)
+            pitch_variation_coeff = (pitch_std / pitch_mean * 100) if pitch_mean > 0 else 0
             
-            # Detect silence with improved threshold
-            silence_threshold = -40
-            is_silence = rms_db < silence_threshold
+            # Calculate monotone score based on multiple factors
+            # 1. Low pitch variation (monotone speakers have less variation)
+            variation_factor = min(1.0, max(0.0, 1.0 - (pitch_variation_coeff / 30.0)))
             
-            # Count pauses (silence segments longer than 0.5 seconds)
-            min_pause_frames = int(0.5 * sr / hop_length)  # 0.5 seconds minimum pause duration
-            silence_runs = np.split(is_silence, np.where(np.diff(is_silence))[0] + 1)
+            # 2. Small pitch range relative to mean pitch (monotone speakers have smaller ranges)
+            range_ratio = (pitch_range / pitch_mean * 100) if pitch_mean > 0 else 0
+            range_factor = min(1.0, max(0.0, 1.0 - (range_ratio / 100.0)))
             
-            # Count valid pauses (longer than minimum duration)
-            valid_pauses = sum(1 for run in silence_runs if len(run) >= min_pause_frames and run[0])
+            # 3. Few pitch direction changes (monotone speakers have fewer changes)
+            pitch_changes = np.diff(valid_f0) if len(valid_f0) > 1 else np.array([])
+            direction_changes = np.sum(np.diff(np.signbit(pitch_changes))) if len(pitch_changes) > 0 else 0
+            changes_per_minute = direction_changes / (len(audio) / sr / 60) if len(audio) > 0 else 0
+            changes_factor = min(1.0, max(0.0, 1.0 - (changes_per_minute / 300.0)))
             
-            # Calculate duration in minutes
-            duration_minutes = len(audio) / sr / 60
+            # Calculate final monotone score (0-1, higher means more monotonous)
+            monotone_score = (variation_factor * 0.4 + range_factor * 0.3 + changes_factor * 0.3)
+            
+            # Log the factors for debugging
+            logger.info(f"""Monotone score calculation:
+                Pitch variation coeff: {pitch_variation_coeff:.2f}
+                Variation factor: {variation_factor:.2f}
+                Range ratio: {range_ratio:.2f}
+                Range factor: {range_factor:.2f}
+                Changes per minute: {changes_per_minute:.2f}
+                Changes factor: {changes_factor:.2f}
+                Final monotone score: {monotone_score:.2f}
+            """)
             
             # Calculate pauses per minute
-            pauses_per_minute = valid_pauses / duration_minutes if duration_minutes > 0 else 0
+            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+            silence_frames = rms_db < self.silence_threshold
+            frame_time = self.hop_length / sr
+            pause_analysis = self._analyze_pauses(silence_frames, frame_time)
+            
+            # Calculate pauses per minute
+            duration_minutes = len(audio) / sr / 60
+            pauses_per_minute = float(pause_analysis['total_pauses'] / duration_minutes if duration_minutes > 0 else 0)
             
             return {
-                "pitch_mean": float(np.mean(valid_f0)) if len(valid_f0) > 0 else 0,
-                "pitch_std": float(np.std(valid_f0)) if len(valid_f0) > 0 else 0,
+                "pitch_mean": pitch_mean,
+                "pitch_std": pitch_std,
+                "pitch_range": pitch_range,
+                "pitch_variation_coeff": pitch_variation_coeff,
+                "monotone_score": monotone_score,  # Added monotone score to output
                 "mean_amplitude": mean_amplitude,
                 "amplitude_deviation": float(np.std(rms) / np.mean(rms)) if np.mean(rms) > 0 else 0,
-                "pauses_per_minute": float(pauses_per_minute),
+                "pauses_per_minute": pauses_per_minute,
                 "duration": float(len(audio) / sr),
                 "rising_patterns": int(np.sum(np.diff(valid_f0) > 0)) if len(valid_f0) > 1 else 0,
                 "falling_patterns": int(np.sum(np.diff(valid_f0) < 0)) if len(valid_f0) > 1 else 0,
-                "variations_per_minute": float(len(valid_f0) / (len(audio) / sr / 60)) if len(audio) > 0 else 0
+                "variations_per_minute": float(len(valid_f0) / (len(audio) / sr / 60)) if len(audio) > 0 else 0,
+                "direction_changes_per_min": changes_per_minute
             }
             
         except Exception as e:
@@ -286,68 +310,79 @@ class ContentAnalyzer:
         
     def analyze_content(self, transcript: str, progress_callback=None) -> Dict[str, Any]:
         """Analyze teaching content with strict validation and robust JSON handling"""
+        default_structure = {
+            "Concept Assessment": {
+                "Subject Matter Accuracy": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "First Principles Approach": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Examples and Business Context": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Cohesive Storytelling": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Engagement and Interaction": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Professional Tone": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                }
+            },
+            "Code Assessment": {
+                "Depth of Explanation": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Output Interpretation": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                },
+                "Breaking down Complexity": {
+                    "Score": 0,
+                    "Citations": ["[00:00] Unable to assess - insufficient evidence"]
+                }
+            }
+        }
+
         for attempt in range(self.retry_count):
             try:
                 if progress_callback:
                     progress_callback(0.2, "Preparing content analysis...")
                 
-                # Remove any truncation of transcript - pass full text to API
                 prompt = self._create_analysis_prompt(transcript)
-                logger.info(f"Sending full transcript of length: {len(transcript)} characters")
                 
                 if progress_callback:
                     progress_callback(0.5, "Processing with AI model...")
                 
                 try:
                     response = self.client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4o-mini",  # Using GPT-4 for better analysis
                         messages=[
                             {"role": "system", "content": """You are a strict teaching evaluator focusing on core teaching competencies.
-                             Maintain high standards and require clear evidence of quality teaching.
+                             For each assessment point, you MUST include specific timestamps [MM:SS] from the transcript.
+                             Never use [00:00] as a placeholder - only use actual timestamps from the transcript.
+                             Each citation must include both the timestamp and a relevant quote showing evidence.
                              
                              Score of 1 requires meeting ALL criteria below with clear evidence.
                              Score of 0 if ANY major teaching deficiency is present.
                              
-                             Concept Assessment Scoring Criteria:
-                             - Subject Matter Accuracy (Score 1 requires: Completely accurate information, no errors)
-                             - First Principles Approach (Score 1 requires: Clear explanation of fundamentals before complex topics)
-                             - Examples and Business Context (Score 1 requires: At least 2 relevant examples with business context)
-                             - Cohesive Storytelling (Score 1 requires: Clear logical flow with smooth transitions)
-                             - Engagement and Interaction (Score 1 requires: At least 3 engagement points or questions)
-                             - Professional Tone (Score 1 requires: Consistently professional delivery)
+                             Citations format: "[MM:SS] Exact quote from transcript showing evidence"
                              
-                             Code Assessment Scoring Criteria:
-                             - Depth of Explanation (Score 1 requires: Thorough explanation of implementation details)
-                             - Output Interpretation (Score 1 requires: Clear connection between code outputs and business value)
-                             - Breaking down Complexity (Score 1 requires: Systematic breakdown of complex concepts)
-                             
-                             Major Teaching Deficiencies (ANY of these results in Score 0):
-                             - Any factual errors
-                             - Missing foundational explanations
-                             - Insufficient examples or business context
-                             - Disorganized presentation
-                             - Limited learner engagement
-                             - Unprofessional language
-                             - Superficial code explanation
-                             - Missing business context
-                             - Poor complexity management
-                             
-                             Citations Requirements:
-                             - Include specific timestamps [MM:SS]
-                             - Provide examples for both good and poor teaching moments
-                             - Note specific instances of criteria being met or missed
-                             
-                             For each improvement suggestion, categorize it as one of:
-                             - COMMUNICATION: Related to speaking, pace, tone, clarity, delivery
-                             - TEACHING: Related to explanation, examples, engagement, structure
-                             - TECHNICAL: Related to code, implementation, technical concepts
-                             
-                             Always respond with valid JSON containing these exact categories."""},
+                             Maintain high standards and require clear evidence of quality teaching."""},
                             {"role": "user", "content": prompt}
                         ],
-                        response_format={"type": "json_object"},
-                        temperature=0.3 # Lower temperature for stricter evaluation
+                        temperature=0.3
                     )
+                    
                     logger.info("API call successful")
                 except Exception as api_error:
                     logger.error(f"API call failed: {str(api_error)}")
@@ -357,106 +392,118 @@ class ContentAnalyzer:
                 logger.info(f"Raw API response: {result_text[:500]}...")
                 
                 try:
+                    # Parse the API response
                     result = json.loads(result_text)
-                    logger.info("Successfully parsed JSON response")
                     
-                    # Validate the response structure
-                    required_categories = {
-                        "Concept Assessment": [
-                            "Subject Matter Accuracy",
-                            "First Principles Approach",
-                            "Examples and Business Context",
-                            "Cohesive Storytelling",
-                            "Engagement and Interaction",
-                            "Professional Tone"
-                        ],
-                        "Code Assessment": [
-                            "Depth of Explanation",
-                            "Output Interpretation",
-                            "Breaking down Complexity"
-                        ]
-                    }
-                    
-                    # Check if response has required structure
-                    for category, subcategories in required_categories.items():
+                    # Validate and clean up the structure
+                    for category in ["Concept Assessment", "Code Assessment"]:
                         if category not in result:
-                            logger.error(f"Missing category: {category}")
-                            raise ValueError(f"Response missing required category: {category}")
-                        
-                        for subcategory in subcategories:
-                            if subcategory not in result[category]:
-                                logger.error(f"Missing subcategory: {subcategory} in {category}")
-                                raise ValueError(f"Response missing required subcategory: {subcategory}")
-                            
-                            subcat_data = result[category][subcategory]
-                            if not isinstance(subcat_data, dict):
-                                logger.error(f"Invalid format for {category}.{subcategory}")
-                                raise ValueError(f"Invalid format for {category}.{subcategory}")
-                            
-                            if "Score" not in subcat_data or "Citations" not in subcat_data:
-                                logger.error(f"Missing Score or Citations in {category}.{subcategory}")
-                                raise ValueError(f"Missing Score or Citations in {category}.{subcategory}")
+                            result[category] = default_structure[category]
+                        else:
+                            for subcategory in default_structure[category]:
+                                if subcategory not in result[category]:
+                                    result[category][subcategory] = default_structure[category][subcategory]
+                                else:
+                                    # Ensure proper structure and non-empty citations
+                                    entry = result[category][subcategory]
+                                    if not isinstance(entry, dict):
+                                        entry = {"Score": 0, "Citations": []}
+                                    if "Score" not in entry:
+                                        entry["Score"] = 0
+                                    if "Citations" not in entry or not entry["Citations"]:
+                                        entry["Citations"] = [f"[{self._get_timestamp(transcript)}] Insufficient evidence for assessment"]
+                                    # Ensure Score is either 0 or 1
+                                    entry["Score"] = 1 if entry["Score"] == 1 else 0
+                                    result[category][subcategory] = entry
                     
                     return result
                     
                 except json.JSONDecodeError as json_error:
-                    logger.error(f"JSON parsing error: {str(json_error)}")
-                    logger.error(f"Invalid JSON response: {result_text}")
-                    raise
-                except ValueError as val_error:
-                    logger.error(f"Validation error: {str(val_error)}")
-                    raise
-                
+                    logger.error(f"JSON parsing error: {json_error}")
+                    if attempt == self.retry_count - 1:
+                        # On final attempt, try to extract structured data
+                        return self._extract_structured_data(result_text)
+                    
             except Exception as e:
                 logger.error(f"Content analysis attempt {attempt + 1} failed: {str(e)}")
                 if attempt == self.retry_count - 1:
-                    logger.error("All attempts failed, returning default structure")
-                    return {
-                        "Concept Assessment": {
-                            "Subject Matter Accuracy": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "First Principles Approach": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Examples and Business Context": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Cohesive Storytelling": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Engagement and Interaction": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Professional Tone": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]}
-                        },
-                        "Code Assessment": {
-                            "Depth of Explanation": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Output Interpretation": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]},
-                            "Breaking down Complexity": {"Score": 0, "Citations": [f"Analysis failed: {str(e)}"]}
-                        }
-                    }
+                    return default_structure
                 time.sleep(self.retry_delay * (2 ** attempt))
+        
+        return default_structure
+
+    def _get_timestamp(self, transcript: str) -> str:
+        """Generate a reasonable timestamp based on transcript length"""
+        # Calculate approximate time based on word count
+        words = len(transcript.split())
+        minutes = words // 150  # Assuming 150 words per minute
+        seconds = (words % 150) * 60 // 150
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _extract_structured_data(self, text: str) -> Dict[str, Any]:
+        """Extract structured data from text response when JSON parsing fails"""
+        default_structure = {
+            "Concept Assessment": {},
+            "Code Assessment": {}
+        }
+        
+        try:
+            # Simple pattern matching to extract scores and citations
+            sections = text.split('\n\n')
+            current_category = None
+            current_subcategory = None
+            
+            for section in sections:
+                if "Concept Assessment" in section:
+                    current_category = "Concept Assessment"
+                elif "Code Assessment" in section:
+                    current_category = "Code Assessment"
+                elif current_category and ':' in section:
+                    title, content = section.split(':', 1)
+                    current_subcategory = title.strip()
+                    
+                    # Extract score (assuming 0 or 1 is mentioned)
+                    score = 1 if "pass" in content.lower() or "score: 1" in content.lower() else 0
+                    
+                    # Extract citations (assuming they're in [MM:SS] format)
+                    citations = re.findall(r'\[\d{2}:\d{2}\].*?(?=\[|$)', content)
+                    citations = [c.strip() for c in citations if c.strip()]
+                    
+                    if not citations:
+                        citations = ["No specific citations found"]
+                    
+                    if current_category and current_subcategory:
+                        if current_category not in default_structure:
+                            default_structure[current_category] = {}
+                        default_structure[current_category][current_subcategory] = {
+                            "Score": score,
+                            "Citations": citations
+                        }
+            
+            return default_structure
+        except Exception as e:
+            logger.error(f"Error extracting structured data: {e}")
+            return default_structure
 
     def _create_analysis_prompt(self, transcript: str) -> str:
-        """Create the analysis prompt with smart timestamp handling"""
+        """Create the analysis prompt with stricter evaluation criteria"""
         # First try to extract existing timestamps
         timestamps = re.findall(r'\[(\d{2}:\d{2})\]', transcript)
         
         if timestamps:
-            # Use existing timestamps
             timestamp_instruction = f"""Use the EXACT timestamps from the transcript (e.g. {', '.join(timestamps[:3])}).
 Do not create new timestamps."""
         else:
             # Calculate approximate timestamps based on word position
-            words_per_minute = 150  # average speaking rate
             timestamp_instruction = """Generate timestamps based on word position:
 1. Count words from start of transcript
 2. Calculate time: (word_count / 150) minutes
-3. Format as [MM:SS]
-Example: If a quote starts at word 300, timestamp would be [02:00] (300 words / 150 words per minute)"""
-            
-            # Add word position markers to help with timestamp calculation
-            words = transcript.split()
-            marked_transcript = ""
-            for i, word in enumerate(words):
-                if i % 150 == 0:  # Add marker every ~1 minute of speech
-                    minutes = i // 150
-                    marked_transcript += f"\n[{minutes:02d}:00] "
-                marked_transcript += word + " "
-            transcript = marked_transcript
+3. Format as [MM:SS]"""
 
-        prompt_template = """Analyze this teaching content and provide detailed assessment.
+        prompt_template = """Analyze this teaching content with balanced standards. Each criterion should be evaluated fairly, avoiding both excessive strictness and leniency.
+
+Score 1 if MOST key requirements are met with clear evidence. Score 0 if MULTIPLE significant requirements are not met.
+You MUST provide specific citations with timestamps [MM:SS] for each assessment point.
 
 Transcript:
 {transcript}
@@ -464,65 +511,149 @@ Transcript:
 Timestamp Instructions:
 {timestamp_instruction}
 
-Required JSON structure:
+Required JSON response format:
 {{
     "Concept Assessment": {{
         "Subject Matter Accuracy": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "First Principles Approach": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Examples and Business Context": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Cohesive Storytelling": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Engagement and Interaction": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Professional Tone": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }}
     }},
     "Code Assessment": {{
         "Depth of Explanation": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Output Interpretation": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }},
         "Breaking down Complexity": {{
-            "Score": 1,
-            "Citations": ["[MM:SS] Quote from transcript"]
+            "Score": 0 or 1,
+            "Citations": ["[MM:SS] Exact quote showing evidence"]
         }}
     }}
 }}
 
-Evaluation Criteria:
-- Subject Matter Accuracy: Check for factual errors or incorrect correlations
-- First Principles Approach: Evaluate if fundamentals are explained before technical terms
-- Examples and Business Context: Look for real-world examples
-- Cohesive Storytelling: Check for logical flow between topics
-- Engagement and Interaction: Evaluate use of questions and engagement techniques
-- Professional Tone: Assess language and delivery professionalism
-- Depth of Explanation: Evaluate technical explanations
-- Output Interpretation: Check if code outputs are explained clearly
-- Breaking down Complexity: Assess ability to simplify complex concepts
+Balanced Scoring Criteria:
+
+Subject Matter Accuracy:
+✓ Score 1 if MOST:
+- Shows good technical knowledge
+- Uses appropriate terminology
+- Explains concepts correctly
+✗ Score 0 if MULTIPLE:
+- Contains significant technical errors
+- Uses consistently incorrect terminology
+- Misrepresents core concepts
+
+First Principles Approach:
+✓ Score 1 if MOST:
+- Introduces fundamental concepts
+- Shows logical progression
+- Connects related concepts
+✗ Score 0 if MULTIPLE:
+- Skips essential fundamentals
+- Shows unclear progression
+- Fails to connect concepts
+
+Examples and Business Context:
+✓ Score 1 if MOST:
+- Provides relevant examples
+- Shows business application
+- Demonstrates practical value
+✗ Score 0 if MULTIPLE:
+- Lacks meaningful examples
+- Missing practical context
+- Examples don't aid learning
+
+Cohesive Storytelling:
+✓ Score 1 if MOST:
+- Shows clear structure
+- Has logical transitions
+- Maintains consistent theme
+✗ Score 0 if MULTIPLE:
+- Has unclear structure
+- Shows jarring transitions
+- Lacks coherent theme
+
+Engagement and Interaction:
+✓ Score 1 if MOST:
+- Encourages participation
+- Shows audience awareness
+- Uses engaging techniques
+✗ Score 0 if MULTIPLE:
+- Shows minimal interaction
+- Ignores audience
+- Lacks engagement attempts
+
+Professional Tone:
+✓ Score 1 if MOST:
+- Uses appropriate language
+- Shows confidence
+- Maintains clarity
+✗ Score 0 if MULTIPLE:
+- Uses inappropriate language
+- Shows consistent uncertainty
+- Is frequently unclear
+
+Depth of Explanation:
+✓ Score 1 if MOST:
+- Explains core concepts
+- Covers key details
+- Discusses implementation
+✗ Score 0 if MULTIPLE:
+- Misses core concepts
+- Skips important details
+- Lacks implementation depth
+
+Output Interpretation:
+✓ Score 1 if MOST:
+- Explains key results
+- Covers common errors
+- Discusses performance
+✗ Score 0 if MULTIPLE:
+- Unclear about results
+- Ignores error cases
+- Misses performance aspects
+
+Breaking down Complexity:
+✓ Score 1 if MOST:
+- Breaks down concepts
+- Shows clear steps
+- Builds understanding
+✗ Score 0 if MULTIPLE:
+- Keeps concepts too complex
+- Skips important steps
+- Creates confusion
 
 Important:
-- Each citation must include a timestamp and relevant quote
-- Citations should highlight specific examples of criteria being met or missed
-- Use only Score values of 0 or 1"""
+- Each citation must include timestamp and relevant quote
+- Score 1 requires meeting MOST (not all) criteria
+- Score 0 requires MULTIPLE significant issues
+- Use specific evidence from transcript
+- Balance between being overly strict and too lenient
+"""
 
         return prompt_template.format(
             transcript=transcript,
@@ -531,7 +662,7 @@ Important:
 
     def _evaluate_speech_metrics(self, transcript: str, audio_features: Dict[str, float], 
                            progress_callback=None) -> Dict[str, Any]:
-        """Evaluate speech metrics with improved accuracy"""
+        """Evaluate speech metrics with improved accuracy and stricter checks"""
         try:
             if progress_callback:
                 progress_callback(0.2, "Calculating speech metrics...")
@@ -540,30 +671,85 @@ Important:
             words = len(transcript.split())
             duration_minutes = float(audio_features.get('duration', 0)) / 60
             
-            # Calculate words per minute with updated range (130-160 WPM is ideal for teaching)
-            words_per_minute = float(words / duration_minutes if duration_minutes > 0 else 0)
+            # Enhanced grammatical error detection with stricter patterns
+            grammatical_errors = []
             
-            # Improved filler word detection (2-3 per minute is acceptable)
-            filler_words = re.findall(r'\b(um|uh|like|you\s+know|basically|actually|literally)\b', 
-                                    transcript.lower())
-            fillers_count = len(filler_words)
-            fillers_per_minute = float(fillers_count / duration_minutes if duration_minutes > 0 else 0)
+            # Subject-verb agreement errors
+            sv_errors = re.findall(r'\b(they is|he are|she are|it are|there are \w+s|there is \w+s)\b', transcript.lower())
+            grammatical_errors.extend([("Subject-Verb Agreement", err) for err in sv_errors])
             
-            # Improved error detection (1-2 per minute is acceptable)
-            repeated_words = len(re.findall(r'\b(\w+)\s+\1\b', transcript.lower()))
-            incomplete_sentences = len(re.findall(r'[a-zA-Z]+\s*\.\.\.|\b[a-zA-Z]+\s*-\s+', transcript))
-            errors_count = repeated_words + incomplete_sentences
+            # Article misuse
+            article_errors = re.findall(r'\b(a [aeiou]\w+|an [^aeiou\s]\w+)\b', transcript.lower())
+            grammatical_errors.extend([("Article Misuse", err) for err in article_errors])
+            
+            # Double negatives
+            double_neg = re.findall(r'\b(don\'t.*no|doesn\'t.*no|didn\'t.*no|never.*no)\b', transcript.lower())
+            grammatical_errors.extend([("Double Negative", err) for err in double_neg])
+            
+            # Preposition errors
+            prep_errors = re.findall(r'\b(depend of|different than|identical than)\b', transcript.lower())
+            grammatical_errors.extend([("Preposition Error", err) for err in prep_errors])
+            
+            # Incomplete sentences (stricter detection)
+            incomplete = re.findall(r'[a-zA-Z]+\s*[.!?]\s*(?![A-Z])|[a-zA-Z]+\s*-\s+|[a-zA-Z]+\s*\.\.\.', transcript)
+            grammatical_errors.extend([("Incomplete Sentence", err) for err in incomplete])
+            
+            # Calculate errors per minute with stricter threshold
+            errors_count = len(grammatical_errors)
             errors_per_minute = float(errors_count / duration_minutes if duration_minutes > 0 else 0)
             
-            # Ensure all values are properly cast to float and have fallbacks
+            # Stricter threshold for errors (max 1 error per minute)
+            max_errors = 1.0
+            
+            # Calculate monotone score with stricter thresholds
             pitch_mean = float(audio_features.get("pitch_mean", 0))
             pitch_std = float(audio_features.get("pitch_std", 0))
-            mean_amplitude = float(audio_features.get("mean_amplitude", 0))
-            amplitude_deviation = float(audio_features.get("amplitude_deviation", 0))
-            pauses_per_minute = float(audio_features.get("pauses_per_minute", 0))
-            variations_per_minute = float(audio_features.get("variations_per_minute", 0))
-            rising_patterns = int(audio_features.get("rising_patterns", 0))
-            falling_patterns = int(audio_features.get("falling_patterns", 0))
+            pitch_variation_coeff = (pitch_std / pitch_mean * 100) if pitch_mean > 0 else 0
+            direction_changes = float(audio_features.get("direction_changes_per_min", 0))
+            pitch_range = float(audio_features.get("pitch_range", 0))
+            
+            # Recalibrated scoring factors with stricter ranges
+            # Variation factor: needs wider variation (20-40% is good)
+            variation_factor = min(1.0, max(0.0,
+                1.0 if 20 <= pitch_variation_coeff <= 40
+                else 0.5 if 15 <= pitch_variation_coeff <= 45
+                else 0.0
+            ))
+            
+            # Range factor: needs wider range (200-300% is good)
+            range_ratio = (pitch_range / pitch_mean * 100) if pitch_mean > 0 else 0
+            range_factor = min(1.0, max(0.0,
+                1.0 if 200 <= range_ratio <= 300
+                else 0.5 if 150 <= range_ratio <= 350
+                else 0.0
+            ))
+            
+            # Changes factor: needs more frequent changes (450-650 changes/min is good)
+            changes_factor = min(1.0, max(0.0,
+                1.0 if 450 <= direction_changes <= 650
+                else 0.5 if 350 <= direction_changes <= 750
+                else 0.0
+            ))
+            
+            # Calculate final monotone score (0-1, higher means more monotonous)
+            # Using weighted average to emphasize variation importance
+            weights = [0.4, 0.3, 0.3]  # More weight on pitch variation
+            monotone_score = 1.0 - (
+                (variation_factor * weights[0] + 
+                 range_factor * weights[1] + 
+                 changes_factor * weights[2])
+            )
+            
+            # Add debug logging
+            logger.info(f"""Monotone score calculation:
+                Pitch variation coeff: {pitch_variation_coeff:.2f}
+                Pitch range ratio: {range_ratio:.2f}%
+                Changes per minute: {direction_changes:.2f}
+                Variation factor: {variation_factor:.2f}
+                Range factor: {range_factor:.2f}
+                Changes factor: {changes_factor:.2f}
+                Final score: {monotone_score:.2f}
+            """)
             
             return {
                 "speed": {
@@ -573,29 +759,34 @@ Important:
                     "duration_minutes": duration_minutes
                 },
                 "fluency": {
-                    "score": 1 if errors_per_minute <= 2 and fillers_per_minute <= 3 else 0,
-                    "fillersPerMin": fillers_per_minute,
-                    "errorsPerMin": errors_per_minute
+                    "score": 1 if errors_per_minute <= max_errors else 0,
+                    "errorsPerMin": errors_per_minute,
+                    "maxErrorsThreshold": max_errors,
+                    "detectedErrors": [
+                        {
+                            "type": error_type,
+                            "context": error_text
+                        } for error_type, error_text in grammatical_errors
+                    ]
                 },
                 "flow": {
-                    "score": 1 if pauses_per_minute <= 12 else 0,
-                    "pausesPerMin": pauses_per_minute
+                    "score": 1 if audio_features.get("pauses_per_minute", 0) <= 12 else 0,
+                    "pausesPerMin": audio_features.get("pauses_per_minute", 0)
                 },
                 "intonation": {
                     "pitch": pitch_mean,
-                    "pitchScore": 1 if 20 <= (pitch_std / pitch_mean * 100 if pitch_mean > 0 else 0) <= 40 else 0,
-                    "pitchVariation": pitch_std,
-                    "patternScore": 1 if variations_per_minute >= 100 else 0,
-                    "risingPatterns": rising_patterns,
-                    "fallingPatterns": falling_patterns,
-                    "variationsPerMin": variations_per_minute,
-                    "mu": pitch_mean
+                    "pitchScore": 1 if not any(monotone_indicators.values()) else 0,
+                    "pitchVariation": pitch_variation_coeff,
+                    "monotoneScore": monotone_score,
+                    "monotoneIndicators": monotone_indicators,
+                    "directionChanges": direction_changes,
+                    "variationsPerMin": audio_features.get("variations_per_minute", 0)
                 },
                 "energy": {
-                    "score": 1 if 60 <= mean_amplitude <= 75 else 0,
-                    "meanAmplitude": mean_amplitude,
-                    "amplitudeDeviation": amplitude_deviation,
-                    "variationScore": 1 if 0.05 <= amplitude_deviation <= 0.15 else 0
+                    "score": 1 if 60 <= audio_features.get("mean_amplitude", 0) <= 75 else 0,
+                    "meanAmplitude": audio_features.get("mean_amplitude", 0),
+                    "amplitudeDeviation": audio_features.get("amplitude_deviation", 0),
+                    "variationScore": 1 if 0.05 <= audio_features.get("amplitude_deviation", 0) <= 0.15 else 0
                 }
             }
 
@@ -880,20 +1071,12 @@ class MentorEvaluator:
         self._cache[key] = (time.time(), value)
 
     def _extract_audio(self, video_path: str, output_path: str, progress_callback=None) -> str:
-        """Extract audio from video"""
+        """Extract audio from video with optimized settings"""
         try:
             if progress_callback:
                 progress_callback(0.1, "Checking dependencies...")
 
-            if not shutil.which('ffmpeg'):
-                raise AudioProcessingError("FFmpeg is not installed")
-
-            if not os.path.exists(video_path):
-                raise FileNotFoundError(f"Video file not found: {video_path}")
-
-            if progress_callback:
-                progress_callback(0.3, "Configuring audio extraction...")
-
+            # Add optimized ffmpeg settings
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-i', video_path,
@@ -902,18 +1085,21 @@ class MentorEvaluator:
                 '-f', 'wav',     # Output format
                 '-v', 'warning', # Reduce verbosity
                 '-y',           # Overwrite output file
+                # Add these optimizations:
+                '-c:a', 'pcm_s16le',  # Use simple audio codec
+                '-movflags', 'faststart',  # Optimize for streaming
+                '-threads', str(max(1, multiprocessing.cpu_count() - 1)),  # Use multiple threads
                 output_path
             ]
-
-            if progress_callback:
-                progress_callback(0.5, "Extracting audio...")
-
+            
+            # Use subprocess with optimized buffer size
             result = subprocess.run(
                 ffmpeg_cmd,
                 capture_output=True,
-                text=True
+                text=True,
+                bufsize=10*1024*1024  # 10MB buffer
             )
-
+            
             if result.returncode != 0:
                 raise AudioProcessingError(f"FFmpeg Error: {result.stderr}")
 
@@ -972,7 +1158,7 @@ class MentorEvaluator:
             # Create progress tracking containers with error handling
             try:
                 status = st.empty()
-                progress = st.progress(0.0)
+                progress = st.progress(0)
                 tracker = ProgressTracker(status, progress)
             except Exception as e:
                 logger.error(f"Failed to create progress trackers: {e}")
@@ -1024,6 +1210,9 @@ class MentorEvaluator:
                         content_analysis
                     )
                     tracker.next_step()
+
+                    # Add speech metrics evaluation
+                    speech_metrics = self._evaluate_speech_metrics(transcript, audio_features)
                     
                     # Clear progress indicators
                     status.empty()
@@ -1033,7 +1222,8 @@ class MentorEvaluator:
                         "audio_features": audio_features,
                         "transcript": transcript,
                         "teaching": content_analysis,
-                        "recommendations": recommendations
+                        "recommendations": recommendations,
+                        "speech_metrics": speech_metrics
                     }
 
             finally:
@@ -1092,7 +1282,7 @@ class MentorEvaluator:
             # Initialize model with optimized settings and proper error handling
             try:
                 model = WhisperModel(
-                    "small",
+                    "medium",
                     device=device,
                     compute_type=compute_type,
                     download_root=self.model_cache_dir,
@@ -1243,16 +1433,15 @@ class MentorEvaluator:
             incomplete_sentences = len(re.findall(r'[a-zA-Z]+\s*\.\.\.|\b[a-zA-Z]+\s*-\s+', transcript))
             errors_count = repeated_words + incomplete_sentences
             errors_per_minute = float(errors_count / duration_minutes if duration_minutes > 0 else 0)
-            
-            # Ensure all values are properly cast to float and have fallbacks
-            pitch_mean = float(audio_features.get("pitch_mean", 0))
-            pitch_std = float(audio_features.get("pitch_std", 0))
-            mean_amplitude = float(audio_features.get("mean_amplitude", 0))
-            amplitude_deviation = float(audio_features.get("amplitude_deviation", 0))
-            pauses_per_minute = float(audio_features.get("pauses_per_minute", 0))
-            variations_per_minute = float(audio_features.get("variations_per_minute", 0))
-            rising_patterns = int(audio_features.get("rising_patterns", 0))
-            falling_patterns = int(audio_features.get("falling_patterns", 0))
+
+            # Set default thresholds if analysis fails
+            max_errors = 1.0
+            max_fillers = 3.0
+            threshold_explanation = "Using standard thresholds"
+            grammatical_errors = []
+
+            # Calculate fluency score based on both errors and fillers
+            fluency_score = 1 if (errors_per_minute <= max_errors and fillers_per_minute <= max_fillers) else 0
             
             return {
                 "speed": {
@@ -1262,29 +1451,39 @@ class MentorEvaluator:
                     "duration_minutes": duration_minutes
                 },
                 "fluency": {
-                    "score": 1 if errors_per_minute <= 2 and fillers_per_minute <= 3 else 0,
+                    "score": fluency_score,  # Add explicit fluency score
+                    "errorsPerMin": errors_per_minute,
                     "fillersPerMin": fillers_per_minute,
-                    "errorsPerMin": errors_per_minute
+                    "maxErrorsThreshold": max_errors,
+                    "maxFillersThreshold": max_fillers,
+                    "thresholdExplanation": threshold_explanation,
+                    "detectedErrors": [
+                        {
+                            "type": "Grammar",
+                            "context": error,
+                        } for error in grammatical_errors
+                    ],
+                    "detectedFillers": filler_words
                 },
                 "flow": {
-                    "score": 1 if pauses_per_minute <= 12 else 0,
-                    "pausesPerMin": pauses_per_minute
+                    "score": 1 if audio_features.get("pauses_per_minute", 0) <= 12 else 0,
+                    "pausesPerMin": audio_features.get("pauses_per_minute", 0)
                 },
                 "intonation": {
-                    "pitch": pitch_mean,
-                    "pitchScore": 1 if 20 <= (pitch_std / pitch_mean * 100 if pitch_mean > 0 else 0) <= 40 else 0,
-                    "pitchVariation": pitch_std,
-                    "patternScore": 1 if variations_per_minute >= 100 else 0,
-                    "risingPatterns": rising_patterns,
-                    "fallingPatterns": falling_patterns,
-                    "variationsPerMin": variations_per_minute,
-                    "mu": pitch_mean
+                    "pitch": audio_features.get("pitch_mean", 0),
+                    "pitchScore": 1 if 20 <= (audio_features.get("pitch_std", 0) / audio_features.get("pitch_mean", 0) * 100 if audio_features.get("pitch_mean", 0) > 0 else 0) <= 40 else 0,
+                    "pitchVariation": audio_features.get("pitch_std", 0),
+                    "patternScore": 1 if audio_features.get("variations_per_minute", 0) >= 120 else 0,
+                    "risingPatterns": audio_features.get("rising_patterns", 0),
+                    "fallingPatterns": audio_features.get("falling_patterns", 0),
+                    "variationsPerMin": audio_features.get("variations_per_minute", 0),
+                    "mu": audio_features.get("pitch_mean", 0)
                 },
                 "energy": {
-                    "score": 1 if 60 <= mean_amplitude <= 75 else 0,
-                    "meanAmplitude": mean_amplitude,
-                    "amplitudeDeviation": amplitude_deviation,
-                    "variationScore": 1 if 0.05 <= amplitude_deviation <= 0.15 else 0
+                    "score": 1 if 60 <= audio_features.get("mean_amplitude", 0) <= 75 else 0,
+                    "meanAmplitude": audio_features.get("mean_amplitude", 0),
+                    "amplitudeDeviation": audio_features.get("amplitude_deviation", 0),
+                    "variationScore": 1 if 0.05 <= audio_features.get("amplitude_deviation", 0) <= 0.15 else 0
                 }
             }
 
@@ -1294,6 +1493,11 @@ class MentorEvaluator:
 
 def validate_video_file(file_path: str):
     """Validate video file before processing"""
+    MAX_SIZE = 1024 * 1024 * 1024  # 500MB limit
+    
+    if os.path.getsize(file_path) > MAX_SIZE:
+        raise ValueError(f"File size exceeds {MAX_SIZE/1024/1024}MB limit")
+    
     valid_extensions = {'.mp4', '.avi', '.mov'}
     
     if not os.path.exists(file_path):
@@ -1301,9 +1505,6 @@ def validate_video_file(file_path: str):
         
     if os.path.splitext(file_path)[1].lower() not in valid_extensions:
         raise ValueError("Unsupported video format")
-        
-    if os.path.getsize(file_path) > 1 * 1024 * 1024 * 1024:  # 1GB
-        raise ValueError("File size exceeds 1GB limit")
         
     try:
         probe = subprocess.run(
@@ -1324,72 +1525,45 @@ def display_evaluation(evaluation: Dict[str, Any]):
         with tabs[0]:
             st.header("Communication Metrics")
             
-            # Get audio features directly from evaluation data
+            # Get audio features and ensure we have the required metrics
             audio_features = evaluation.get("audio_features", {})
             
             # Speed Metrics
             with st.expander("🏃 Speed", expanded=True):
-                duration_minutes = float(audio_features.get('duration', 0)) / 60
-                words = len(evaluation.get("transcript", "").split())
-                wpm = float(words / duration_minutes if duration_minutes > 0 else 0)
+                # Fix: Calculate WPM using total words and duration
+                speech_metrics = evaluation.get("speech_metrics", {})
+                speed_data = speech_metrics.get("speed", {})
+                words_per_minute = speed_data.get("wpm", 0)  # Get WPM from speech metrics
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Score", "✅ Pass" if 120 <= wpm <= 180 else "❌ Needs Improvement")
-                    st.metric("Words per Minute", f"{wpm:.1f}")
+                    st.metric("Score", "✅ Pass" if 120 <= words_per_minute <= 180 else "❌ Needs Improvement")
+                    st.metric("Words per Minute", f"{words_per_minute:.1f}")
                 with col2:
                     st.info("""
                     **Acceptable Range:** 120-180 WPM
+                    - Optimal teaching pace: 130-160 WPM
                     """)
-                    
-                    # Add explanation card
-                    st.markdown("""
-                    <div class="metric-explanation-card">
-                        <h4>🎯 Understanding Speed Metrics</h4>
-                        <ul>
-                            <li><b>Words per Minute (WPM):</b> Rate of speech delivery
-                                <br>• Too slow (<120 WPM): May lose audience engagement
-                                <br>• Too fast (>180 WPM): May hinder comprehension
-                                <br>• Optimal (130-160 WPM): Best for learning</li>
-                            <li><b>Total Words:</b> Complete word count in the presentation</li>
-                            <li><b>Duration:</b> Total speaking time in minutes</li>
-                        </ul>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
+
             # Fluency Metrics
             with st.expander("🗣️ Fluency", expanded=True):
-                # Calculate fluency metrics from audio features
-                pitch_mean = float(audio_features.get("pitch_mean", 0))
-                pitch_std = float(audio_features.get("pitch_std", 0))
+                # Get metrics from speech evaluation
+                speech_metrics = evaluation.get("speech_metrics", {})
+                fillers_per_minute = float(speech_metrics.get("fluency", {}).get("fillersPerMin", 0))
+                errors_per_minute = float(speech_metrics.get("fluency", {}).get("errorsPerMin", 0))
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Pitch Mean", f"{pitch_mean:.1f} Hz")
-                    st.metric("Pitch Variation", f"{pitch_std:.1f} Hz")
+                    st.metric("Score", "✅ Pass" if fillers_per_minute <= 3 and errors_per_minute <= 1 else "❌ Needs Improvement")
+                    st.metric("Fillers per Minute", f"{fillers_per_minute:.1f}")
+                    st.metric("Errors per Minute", f"{errors_per_minute:.1f}")
                 with col2:
                     st.info("""
                     **Acceptable Ranges:**
-                    - Pitch Variation: 20-40% from baseline
-                    - Variations per Minute: >100
+                    - Fillers per Minute: <3
+                    - Errors per Minute: <1
                     """)
-                    
-                    # Add new explanation card
-                    st.markdown("""
-                    <div class="metric-explanation-card">
-                        <h4>📊 Understanding Intonation Metrics</h4>
-                        <ul>
-                            <li><b>Pitch Mean (μ):</b> Average voice frequency. Typical ranges:
-                                <br>• Male: 85-180 Hz
-                                <br>• Female: 165-255 Hz</li>
-                            <li><b>Pitch Variation (σ):</b> How much your pitch changes. Higher values indicate more dynamic speech.</li>
-                            <li><b>Rising Patterns:</b> Number of upward pitch changes, often used for questions or emphasis.</li>
-                            <li><b>Falling Patterns:</b> Number of downward pitch changes, typically used for statements or conclusions.</li>
-                            <li><b>Variations per Minute:</b> Total pitch changes per minute. Higher values indicate more engaging speech patterns.</li>
-                        </ul>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
+
             # Flow Metrics
             with st.expander("🌊 Flow", expanded=True):
                 pauses_per_minute = float(audio_features.get("pauses_per_minute", 0))
@@ -1399,90 +1573,80 @@ def display_evaluation(evaluation: Dict[str, Any]):
                     st.metric("Score", "✅ Pass" if pauses_per_minute <= 12 else "❌ Needs Improvement")
                     st.metric("Pauses per Minute", f"{pauses_per_minute:.1f}")
                 with col2:
-                    st.info("**Acceptable Range:** < 12 PPM")
+                    st.info("""
+                    **Acceptable Range:** 
+                    - Pauses per Minute: <12
+                    - Strategic pauses (8-12 PPM) aid comprehension
+                    """)
                     
+                    # Add explanation card
                     st.markdown("""
                     <div class="metric-explanation-card">
-                        <h4>🌊 Understanding Flow Metrics</h4>
+                        <h4>📊 Understanding Flow Metrics</h4>
                         <ul>
-                            <li><b>Pauses per Minute (PPM):</b> Frequency of speech breaks
-                                <br>• Strategic pauses (8-12 PPM): Aid comprehension
-                                <br>• Too few: May sound rushed
-                                <br>• Too many: Can disrupt flow</li>
-                            <li><b>Pause Duration:</b> Length of speech breaks
-                                <br>• Short pauses (0.5-1s): Natural rhythm
-                                <br>• Long pauses (>2s): Should be intentional</li>
+                            <li><strong>Pauses per Minute (PPM):</strong> Measures the frequency of natural breaks in speech. Strategic pauses help learners process information and emphasize key points.</li>
+                            <li><strong>Optimal Range:</strong> 8-12 PPM indicates well-paced delivery with appropriate breaks for comprehension.</li>
+                            <li><strong>Impact:</strong> Too few pauses can overwhelm learners, while too many can disrupt flow and engagement.</li>
                         </ul>
                     </div>
                     """, unsafe_allow_html=True)
-            
+
             # Intonation Metrics
             with st.expander("🎵 Intonation", expanded=True):
-                variations_per_minute = float(audio_features.get("variations_per_minute", 0))
-                rising_patterns = int(audio_features.get("rising_patterns", 0))
-                falling_patterns = int(audio_features.get("falling_patterns", 0))
+                pitch_mean = float(audio_features.get("pitch_mean", 0))
+                pitch_std = float(audio_features.get("pitch_std", 0))
+                pitch_variation_coeff = float(audio_features.get("pitch_variation_coeff", 0))
+                monotone_score = float(audio_features.get("monotone_score", 0))
+                direction_changes = float(audio_features.get("direction_changes_per_min", 0))
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Variations per Minute", f"{variations_per_minute:.1f}")
-                    st.metric("Rising Patterns", rising_patterns)
-                    st.metric("Falling Patterns", falling_patterns)
+                    st.metric("Monotone Score", f"{monotone_score:.2f}")
+                    st.metric("Pitch Variation", f"{pitch_variation_coeff:.1f}%")
+                    st.metric("Direction Changes/Min", f"{direction_changes:.1f}")
                 with col2:
+                    # Add interpretation guide with stricter thresholds
                     st.info("""
-                    **Acceptable Ranges:**
-                    - Variations per Minute: >100
-                    - Rising Patterns: Number of upward pitch changes
-                    - Falling Patterns: Number of downward pitch changes
+                    **Monotone Analysis:**
+                    - Pitch Variation: 20-40% is optimal
+                    - Direction Changes: 300-600/min is optimal
+                    
+                    **Recommendations:**
+                    - Aim for pitch variation 20-40%
+                    - Target 300-600 direction changes/min
+                    - Use stress patterns for key points
                     """)
                     
-                    # Add new explanation card
-                    st.markdown("""
-                    <div class="metric-explanation-card">
-                        <h4>📊 Understanding Intonation Metrics</h4>
-                        <ul>
-                            <li><b>Pitch Mean (μ):</b> Average voice frequency. Typical ranges:
-                                <br>• Male: 85-180 Hz
-                                <br>• Female: 165-255 Hz</li>
-                            <li><b>Pitch Variation (σ):</b> How much your pitch changes. Higher values indicate more dynamic speech.</li>
-                            <li><b>Rising Patterns:</b> Number of upward pitch changes, often used for questions or emphasis.</li>
-                            <li><b>Falling Patterns:</b> Number of downward pitch changes, typically used for statements or conclusions.</li>
-                            <li><b>Variations per Minute:</b> Total pitch changes per minute. Higher values indicate more engaging speech patterns.</li>
-                        </ul>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    # Add visual indicator only for warning cases
+                    if monotone_score > 0.4 or pitch_variation_coeff < 20 or pitch_variation_coeff > 40 or direction_changes < 300 or direction_changes > 600:
+                        st.warning("⚠️ Speech patterns need adjustment. Consider varying pitch and pace more naturally.")
 
             # Energy Metrics
             with st.expander("⚡ Energy", expanded=True):
                 mean_amplitude = float(audio_features.get("mean_amplitude", 0))
                 amplitude_deviation = float(audio_features.get("amplitude_deviation", 0))
+                sigma_mu_ratio = float(amplitude_deviation) if mean_amplitude > 0 else 0
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Score", "✅ Pass" if 60 <= mean_amplitude <= 75 else "❌ Needs Improvement")
                     st.metric("Mean Amplitude", f"{mean_amplitude:.1f}")
-                    st.metric("Amplitude Deviation", f"{amplitude_deviation:.2f}")
+                    st.metric("Amplitude Deviation (σ)", f"{amplitude_deviation:.3f}")
+                    # st.metric("σ/μ Ratio", f"{sigma_mu_ratio:.3f}")
                 with col2:
                     st.info("""
                     **Acceptable Ranges:**
-                    - Mean Amplitude: 65-85 dB
-                    - Amplitude Deviation: 0.15-0.35
+                    - Mean Amplitude: 60-75
+                    - Amplitude Deviation: 0.05-0.15
                     """)
                     
+                    # Add explanation card
                     st.markdown("""
                     <div class="metric-explanation-card">
-                        <h4>⚡ Understanding Energy Metrics</h4>
+                        <h4>📊 Understanding Energy Metrics</h4>
                         <ul>
-                            <li><b>Mean Amplitude:</b> Average voice volume
-                                <br>• Below 65 dB: Too quiet for classroom
-                                <br>• 65-85 dB: Optimal teaching range
-                                <br>• Above 85 dB: May cause listener fatigue</li>
-                            <li><b>Amplitude Deviation:</b> Voice volume variation
-                                <br>• Below 0.15: Too monotone
-                                <br>• 0.15-0.35: Natural variation
-                                <br>• Above 0.35: Excessive variation</li>
-                            <li><b>Variation Score:</b> Overall energy dynamics
-                                <br>• Measures consistency of voice projection
-                                <br>• Reflects engagement and emphasis</li>
+                            <li><strong>Mean Amplitude:</strong> Average volume level of speech. 60-75 range ensures clear audibility without being too loud.</li>
+                            <li><strong>Amplitude Deviation:</strong> Measures volume variation. 0.05-0.15 indicates good dynamic range without excessive fluctuation.</li>
+                            <li><strong>Impact:</strong> Proper energy levels maintain listener engagement and emphasize key points without causing listener fatigue.</li>
                         </ul>
                     </div>
                     """, unsafe_allow_html=True)
