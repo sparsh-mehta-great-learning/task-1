@@ -15,4 +15,3 @@ soundfile
 reportlab
 pandas
 plotly-express
-imageio[ffmpeg]
