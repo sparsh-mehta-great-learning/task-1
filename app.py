@@ -1493,7 +1493,7 @@ class MentorEvaluator:
 
 def validate_video_file(file_path: str):
     """Validate video file before processing"""
-    MAX_SIZE = 2 * 1024 * 1024 * 1024  # 1GB limit
+    MAX_SIZE = 1024 * 1024 * 1024  # 500MB limit
     
     if os.path.getsize(file_path) > MAX_SIZE:
         raise ValueError(f"File size exceeds {MAX_SIZE/1024/1024}MB limit")
