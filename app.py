@@ -2368,377 +2368,381 @@ def generate_pdf_report(evaluation_data: Dict[str, Any]) -> bytes:
         raise RuntimeError(f"Failed to generate PDF report: {str(e)}")
 
 def main():
-    try:
-        # Set page config must be the first Streamlit command
-        st.set_page_config(page_title="🎓 Mentor Demo Review System", layout="wide")
-        
-        # Initialize session state for tracking progress
-        if 'processing_complete' not in st.session_state:
-            st.session_state.processing_complete = False
-        if 'evaluation_results' not in st.session_state:
-            st.session_state.evaluation_results = None
-        
-        # Add custom CSS for animations and styling
-        st.markdown("""
-            <style>
-                /* Shimmer animation keyframes */
-                @keyframes shimmer {
-                    0% {
-                        background-position: -1000px 0;
-                    }
-                    100% {
-                        background-position: 1000px 0;
-                    }
+    # Configure Streamlit page
+    st.set_page_config(
+        page_title="Video Mentor Evaluator",
+        page_icon="🎥",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Set max upload size to 1024MB
+    st.set_option('server.maxUploadSize', 1024)
+    
+    # Initialize session state
+    if 'processing_complete' not in st.session_state:
+        st.session_state.processing_complete = False
+    if 'evaluation_results' not in st.session_state:
+        st.session_state.evaluation_results = None
+    
+    # Add custom CSS for animations and styling
+    st.markdown("""
+        <style>
+            /* Shimmer animation keyframes */
+            @keyframes shimmer {
+                0% {
+                    background-position: -1000px 0;
                 }
-                
-                .title-shimmer {
-                    text-align: center;
-                    color: #1f77b4;
-                    position: relative;
-                    overflow: hidden;
-                    background: linear-gradient(
-                        90deg,
-                        rgba(255, 255, 255, 0) 0%,
-                        rgba(255, 255, 255, 0.8) 50%,
-                        rgba(255, 255, 255, 0) 100%
-                    );
-                    background-size: 1000px 100%;
-                    animation: shimmer 3s infinite linear;
+                100% {
+                    background-position: 1000px 0;
                 }
-                
-                /* Existing animations */
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
-                
-                @keyframes slideIn {
-                    from { transform: translateX(-100%); }
-                    to { transform: translateX(0); }
-                }
-                
-                @keyframes pulse {
-                    0% { transform: scale(1); }
-                    50% { transform: scale(1.05); }
-                    100% { transform: scale(1); }
-                }
-                
-                .fade-in {
-                    animation: fadeIn 1s ease-in;
-                }
-                
-                .slide-in {
-                    animation: slideIn 0.5s ease-out;
-                }
-                
-                .pulse {
-                    animation: pulse 2s infinite;
-                }
-                
-                .metric-card {
-                    background-color: #f0f2f6;
-                    border-radius: 10px;
-                    padding: 20px;
-                    margin: 10px 0;
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                    transition: transform 0.3s ease;
-                }
-                
-                .metric-card:hover {
-                    transform: translateY(-5px);
-                }
-                
-                .stButton>button {
-                    transition: all 0.3s ease;
-                }
-                
-                .stButton>button:hover {
-                    transform: scale(1.05);
-                }
-                
-                .category-header {
-                    background: linear-gradient(90deg, #1f77b4, #2c3e50);
-                    color: white;
-                    padding: 10px;
-                    border-radius: 5px;
-                    margin: 10px 0;
-                }
-                
-                .score-badge {
-                    padding: 5px 10px;
-                    border-radius: 15px;
-                    font-weight: bold;
-                }
-                
-                .score-pass {
-                    background-color: #28a745;
-                    color: white;
-                }
-                
-                .score-fail {
-                    background-color: #dc3545;
-                    color: white;
-                }
-                
-                .metric-box {
-                    background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
-                    padding: 10px;
-                    border-radius: 8px;
-                    margin: 5px;
-                    border-left: 4px solid #1f77b4;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    transition: transform 0.2s ease;
-                }
-                
-                .metric-box:hover {
-                    transform: translateX(5px);
-                }
-                
-                .metric-box.batch {
-                    border-left-color: #28a745;
-                }
-                
-                .metric-box.time {
-                    border-left-color: #dc3545;
-                }
-                
-                .metric-box.progress {
-                    border-left-color: #ffc107;
-                }
-                
-                .metric-box.segment {
-                    border-left-color: #17a2b8;
-                }
-                
-                .metric-box b {
-                    color: #1f77b4;
-                }
-            </style>
+            }
             
-            <div class="fade-in">
-                <h1 class="title-shimmer">
-                    🎓 Mentor Demo Review System
-                </h1>
+            .title-shimmer {
+                text-align: center;
+                color: #1f77b4;
+                position: relative;
+                overflow: hidden;
+                background: linear-gradient(
+                    90deg,
+                    rgba(255, 255, 255, 0) 0%,
+                    rgba(255, 255, 255, 0.8) 50%,
+                    rgba(255, 255, 255, 0) 100%
+                );
+                background-size: 1000px 100%;
+                animation: shimmer 3s infinite linear;
+            }
+            
+            /* Existing animations */
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            
+            @keyframes slideIn {
+                from { transform: translateX(-100%); }
+                to { transform: translateX(0); }
+            }
+            
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                50% { transform: scale(1.05); }
+                100% { transform: scale(1); }
+            }
+            
+            .fade-in {
+                animation: fadeIn 1s ease-in;
+            }
+            
+            .slide-in {
+                animation: slideIn 0.5s ease-out;
+            }
+            
+            .pulse {
+                animation: pulse 2s infinite;
+            }
+            
+            .metric-card {
+                background-color: #f0f2f6;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 10px 0;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                transition: transform 0.3s ease;
+            }
+            
+            .metric-card:hover {
+                transform: translateY(-5px);
+            }
+            
+            .stButton>button {
+                transition: all 0.3s ease;
+            }
+            
+            .stButton>button:hover {
+                transform: scale(1.05);
+            }
+            
+            .category-header {
+                background: linear-gradient(90deg, #1f77b4, #2c3e50);
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+                margin: 10px 0;
+            }
+            
+            .score-badge {
+                padding: 5px 10px;
+                border-radius: 15px;
+                font-weight: bold;
+            }
+            
+            .score-pass {
+                background-color: #28a745;
+                color: white;
+            }
+            
+            .score-fail {
+                background-color: #dc3545;
+                color: white;
+            }
+            
+            .metric-box {
+                background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+                padding: 10px;
+                border-radius: 8px;
+                margin: 5px;
+                border-left: 4px solid #1f77b4;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                transition: transform 0.2s ease;
+            }
+            
+            .metric-box:hover {
+                transform: translateX(5px);
+            }
+            
+            .metric-box.batch {
+                border-left-color: #28a745;
+            }
+            
+            .metric-box.time {
+                border-left-color: #dc3545;
+            }
+            
+            .metric-box.progress {
+                border-left-color: #ffc107;
+            }
+            
+            .metric-box.segment {
+                border-left-color: #17a2b8;
+            }
+            
+            .metric-box b {
+                color: #1f77b4;
+            }
+        </style>
+        
+        <div class="fade-in">
+            <h1 class="title-shimmer">
+                🎓 Mentor Demo Review System
+            </h1>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Sidebar with instructions and status
+    with st.sidebar:
+        st.markdown("""
+            <div class="slide-in">
+                <h2>Instructions</h2>
+                <ol>
+                    <li>Upload your teaching video</li>
+                    <li>Wait for the analysis</li>
+                    <li>Review the detailed feedback</li>
+                    <li>Download the report</li>
+                </ol>
             </div>
         """, unsafe_allow_html=True)
+        
+        # Add file format information separately
+        st.markdown("**Supported formats:** MP4, AVI, MOV")
+        st.markdown("**Maximum file size:** 1GB")
+        
+        # Create a placeholder for status updates in the sidebar
+        status_placeholder = st.empty()
+        status_placeholder.info("Upload a video to begin analysis")
 
-        # Sidebar with instructions and status
-        with st.sidebar:
+    # Check dependencies with progress
+    with st.status("Checking system requirements...") as status:
+        progress_bar = st.progress(0)
+        
+        status.update(label="Checking FFmpeg installation...")
+        progress_bar.progress(0.3)
+        missing_deps = check_dependencies()
+        
+        progress_bar.progress(0.6)
+        if missing_deps:
+            status.update(label="Missing dependencies detected!", state="error")
+            st.error(f"Missing required dependencies: {', '.join(missing_deps)}")
             st.markdown("""
-                <div class="slide-in">
-                    <h2>Instructions</h2>
-                    <ol>
-                        <li>Upload your teaching video</li>
-                        <li>Wait for the analysis</li>
-                        <li>Review the detailed feedback</li>
-                        <li>Download the report</li>
-                    </ol>
+            Please install the missing dependencies:
+            ```bash
+            sudo apt-get update
+            sudo apt-get install ffmpeg
+            ```
+            """)
+            return
+        
+        progress_bar.progress(1.0)
+        status.update(label="System requirements satisfied!", state="complete")
+
+    # Add input selection with improved styling
+    st.markdown("""
+        <style>
+        .input-selection {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #1f77b4;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .upload-section {
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .upload-header {
+            color: #1f77b4;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Input type selection with better UI
+    st.markdown('<div class="input-selection">', unsafe_allow_html=True)
+    st.markdown("### 📤 Select Upload Method")
+    input_type = st.radio(
+        "Choose how you want to provide your teaching content:",
+        options=[
+            "Video Only (Auto-transcription)",
+            "Video + Manual Transcript"
+        ],
+        help="Select whether you want to upload just the video (we'll transcribe it) or provide your own transcript"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Video upload section
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+    st.markdown('<p class="upload-header">📹 Upload Teaching Video</p>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader(
+        "Select video file",
+        type=['mp4', 'avi', 'mov'],
+        help="Upload your teaching video (MP4, AVI, or MOV format, max 1GB)"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Transcript upload section (conditional)
+    uploaded_transcript = None
+    if input_type == "Video + Manual Transcript":
+        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+        st.markdown('<p class="upload-header">📝 Upload Transcript</p>', unsafe_allow_html=True)
+        uploaded_transcript = st.file_uploader(
+            "Select transcript file",
+            type=['txt'],
+            help="Upload your transcript (TXT format)"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Process video when uploaded
+    if uploaded_file:
+        if input_type == "Video + Manual Transcript" and not uploaded_transcript:
+            st.warning("Please upload both video and transcript files to continue.")
+            return
+            
+        # Only process if not already completed
+        if not st.session_state.processing_complete:
+            status_placeholder.info("Video uploaded, beginning processing...")
+            
+            st.markdown("""
+                <div class="pulse" style="text-align: center;">
+                    <h3>Processing your video...</h3>
                 </div>
             """, unsafe_allow_html=True)
             
-            # Add file format information separately
-            st.markdown("**Supported formats:** MP4, AVI, MOV")
-            st.markdown("**Maximum file size:** 1GB")
+            # Create temp directory for processing
+            temp_dir = tempfile.mkdtemp()
+            video_path = os.path.join(temp_dir, uploaded_file.name)
             
-            # Create a placeholder for status updates in the sidebar
-            status_placeholder = st.empty()
-            status_placeholder.info("Upload a video to begin analysis")
-
-        # Check dependencies with progress
-        with st.status("Checking system requirements...") as status:
-            progress_bar = st.progress(0)
-            
-            status.update(label="Checking FFmpeg installation...")
-            progress_bar.progress(0.3)
-            missing_deps = check_dependencies()
-            
-            progress_bar.progress(0.6)
-            if missing_deps:
-                status.update(label="Missing dependencies detected!", state="error")
-                st.error(f"Missing required dependencies: {', '.join(missing_deps)}")
-                st.markdown("""
-                Please install the missing dependencies:
-                ```bash
-                sudo apt-get update
-                sudo apt-get install ffmpeg
-                ```
-                """)
-                return
-            
-            progress_bar.progress(1.0)
-            status.update(label="System requirements satisfied!", state="complete")
-
-        # Add input selection with improved styling
-        st.markdown("""
-            <style>
-            .input-selection {
-                background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
-                padding: 20px;
-                border-radius: 10px;
-                margin: 20px 0;
-                border-left: 4px solid #1f77b4;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            }
-            
-            .upload-section {
-                background: #ffffff;
-                padding: 20px;
-                border-radius: 8px;
-                margin-top: 15px;
-                border: 1px solid #e0e0e0;
-            }
-            
-            .upload-header {
-                color: #1f77b4;
-                font-size: 1.2em;
-                margin-bottom: 10px;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
-        # Input type selection with better UI
-        st.markdown('<div class="input-selection">', unsafe_allow_html=True)
-        st.markdown("### 📤 Select Upload Method")
-        input_type = st.radio(
-            "Choose how you want to provide your teaching content:",
-            options=[
-                "Video Only (Auto-transcription)",
-                "Video + Manual Transcript"
-            ],
-            help="Select whether you want to upload just the video (we'll transcribe it) or provide your own transcript"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Video upload section
-        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-        st.markdown('<p class="upload-header">📹 Upload Teaching Video</p>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader(
-            "Select video file",
-            type=['mp4', 'avi', 'mov'],
-            help="Upload your teaching video (MP4, AVI, or MOV format, max 1GB)"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Transcript upload section (conditional)
-        uploaded_transcript = None
-        if input_type == "Video + Manual Transcript":
-            st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-            st.markdown('<p class="upload-header">📝 Upload Transcript</p>', unsafe_allow_html=True)
-            uploaded_transcript = st.file_uploader(
-                "Select transcript file",
-                type=['txt'],
-                help="Upload your transcript (TXT format)"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # Process video when uploaded
-        if uploaded_file:
-            if input_type == "Video + Manual Transcript" and not uploaded_transcript:
-                st.warning("Please upload both video and transcript files to continue.")
-                return
-                
-            # Only process if not already completed
-            if not st.session_state.processing_complete:
-                status_placeholder.info("Video uploaded, beginning processing...")
-                
-                st.markdown("""
-                    <div class="pulse" style="text-align: center;">
-                        <h3>Processing your video...</h3>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Create temp directory for processing
-                temp_dir = tempfile.mkdtemp()
-                video_path = os.path.join(temp_dir, uploaded_file.name)
-                
-                try:
-                    # Save uploaded file with progress
-                    with st.status("Saving uploaded file...") as status:
-                        # Update sidebar status
-                        status_placeholder.info("Saving uploaded file...")
-                        progress_bar = st.progress(0)
-                        
-                        # Save in chunks to show progress
-                        chunk_size = 1024 * 1024  # 1MB chunks
-                        file_size = len(uploaded_file.getbuffer())
-                        chunks = file_size // chunk_size + 1
-                        
-                        with open(video_path, 'wb') as f:
-                            for i in range(chunks):
-                                start = i * chunk_size
-                                end = min(start + chunk_size, file_size)
-                                f.write(uploaded_file.getbuffer()[start:end])
-                                progress = (i + 1) / chunks
-                                status.update(label=f"Saving file: {progress:.1%}")
-                                progress_bar.progress(progress)
-                        
-                        status.update(label="File saved successfully!", state="complete")
+            try:
+                # Save uploaded file with progress
+                with st.status("Saving uploaded file...") as status:
+                    # Update sidebar status
+                    status_placeholder.info("Saving uploaded file...")
+                    progress_bar = st.progress(0)
                     
-                    # Validate file size
-                    file_size = os.path.getsize(video_path) / (1024 * 1024 * 1024)
-                    if file_size > 1:
-                        st.error("File size exceeds 1GB limit. Please upload a smaller file.")
-                        return
+                    # Save in chunks to show progress
+                    chunk_size = 1024 * 1024  # 1MB chunks
+                    file_size = len(uploaded_file.getbuffer())
+                    chunks = file_size // chunk_size + 1
                     
-                    # Process video
-                    status_placeholder.info("Processing video and generating analysis...")
+                    with open(video_path, 'wb') as f:
+                        for i in range(chunks):
+                            start = i * chunk_size
+                            end = min(start + chunk_size, file_size)
+                            f.write(uploaded_file.getbuffer()[start:end])
+                            progress = (i + 1) / chunks
+                            status.update(label=f"Saving file: {progress:.1%}")
+                            progress_bar.progress(progress)
                     
-                    process_container = st.container()
-                    with process_container:
-                        st.markdown("""
-                            <div class="processing-status">
-                                <h3>🎥 Processing Video</h3>
-                                <div class="status-details"></div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        evaluator = MentorEvaluator()
-                        st.session_state.evaluation_results = evaluator.evaluate_video(
-                            video_path,
-                            uploaded_transcript if input_type == "Video + Manual Transcript" else None
-                        )
-                        st.session_state.processing_complete = True
-                        
-                except Exception as e:
-                    status_placeholder.error(f"Error during processing: {str(e)}")
-                    st.error(f"Error during evaluation: {str(e)}")
+                    status.update(label="File saved successfully!", state="complete")
+                
+                # Validate file size
+                file_size = os.path.getsize(video_path) / (1024 * 1024 * 1024)
+                if file_size > 1:
+                    st.error("File size exceeds 1GB limit. Please upload a smaller file.")
+                    return
+                
+                # Process video
+                status_placeholder.info("Processing video and generating analysis...")
+                
+                process_container = st.container()
+                with process_container:
+                    st.markdown("""
+                        <div class="processing-status">
+                            <h3>🎥 Processing Video</h3>
+                            <div class="status-details"></div>
+                        </div>
+                    """, unsafe_allow_html=True)
                     
-                finally:
-                    # Clean up temp files
-                    if 'temp_dir' in locals():
-                        shutil.rmtree(temp_dir)
+                    evaluator = MentorEvaluator()
+                    st.session_state.evaluation_results = evaluator.evaluate_video(
+                        video_path,
+                        uploaded_transcript if input_type == "Video + Manual Transcript" else None
+                    )
+                    st.session_state.processing_complete = True
+                    
+            except Exception as e:
+                status_placeholder.error(f"Error during processing: {str(e)}")
+                st.error(f"Error during evaluation: {str(e)}")
+                
+            finally:
+                # Clean up temp files
+                if 'temp_dir' in locals():
+                    shutil.rmtree(temp_dir)
+        
+        # Display results if processing is complete
+        if st.session_state.processing_complete and st.session_state.evaluation_results:
+            status_placeholder.success("Analysis complete! Review results below.")
+            st.success("Analysis complete!")
+            display_evaluation(st.session_state.evaluation_results)
             
-            # Display results if processing is complete
-            if st.session_state.processing_complete and st.session_state.evaluation_results:
-                status_placeholder.success("Analysis complete! Review results below.")
-                st.success("Analysis complete!")
-                display_evaluation(st.session_state.evaluation_results)
-                
-                # Add download options
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.download_button(
-                        "📥 Download JSON Report",
-                        json.dumps(st.session_state.evaluation_results, indent=2),
-                        "evaluation_report.json",
-                        "application/json",
-                        help="Download the raw evaluation data in JSON format"
-                    ):
-                        st.success("JSON report downloaded successfully!")
-                
-                with col2:
-                    if st.download_button(
-                        "📄 Download Full Report (PDF)",
-                        generate_pdf_report(st.session_state.evaluation_results),
-                        "evaluation_report.pdf",
-                        "application/pdf",
-                        help="Download a formatted PDF report with detailed analysis"
-                    ):
-                        st.success("PDF report downloaded successfully!")
-
-    except Exception as e:
-        st.error(f"Application error: {str(e)}")
+            # Add download options
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.download_button(
+                    "📥 Download JSON Report",
+                    json.dumps(st.session_state.evaluation_results, indent=2),
+                    "evaluation_report.json",
+                    "application/json",
+                    help="Download the raw evaluation data in JSON format"
+                ):
+                    st.success("JSON report downloaded successfully!")
+            
+            with col2:
+                if st.download_button(
+                    "📄 Download Full Report (PDF)",
+                    generate_pdf_report(st.session_state.evaluation_results),
+                    "evaluation_report.pdf",
+                    "application/pdf",
+                    help="Download a formatted PDF report with detailed analysis"
+                ):
+                    st.success("PDF report downloaded successfully!")
 
 if __name__ == "__main__":
     main()
