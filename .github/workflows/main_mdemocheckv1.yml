@@ -70,4 +70,4 @@ jobs:
           app-name: 'mdemocheckv1'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_205686B7622849DDAA1C7D0966B7C638 }}
-          startup-command: 'streamlit run app.py --server.maxUploadSize=1024'
+          startup-command: 'streamlit run app.py --server.port 8000 --server.address 0.0.0.0 --server.maxUploadSize=1024'
