@@ -1034,10 +1034,15 @@ class CostCalculator:
 class MentorEvaluator:
     """Main class for video evaluation"""
     def __init__(self, model_cache_dir: Optional[str] = None):
-        # Fix potential API key issue
-        self.api_key = st.secrets.get("OPENAI_API_KEY")  # Use get() method
+        # Get API key from Azure App Service environment variable
+        self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
-            raise ValueError("OpenAI API key not found in secrets")
+            raise ValueError("OPENAI_API_KEY environment variable is not set in Azure App Service")
+        
+        # Initialize OpenAI client
+        self.client = OpenAI(api_key=self.api_key)
+        self.retry_count = 3
+        self.retry_delay = 1
         
         # Add error handling for model cache directory
         try:
@@ -2370,12 +2375,22 @@ def generate_pdf_report(evaluation_data: Dict[str, Any]) -> bytes:
 def main():
     # Configure Streamlit page
     st.set_page_config(
-        page_title="Video Mentor Evaluator",
-        page_icon="🎥",
-        layout="wide",
-        initial_sidebar_state="expanded"
+        page_title="Mentor Evaluator",
+        page_icon="🎓",
+        layout="wide"
     )
     
+    # Get API key from Azure App Service environment variable
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        st.error("OPENAI_API_KEY environment variable is not set in Azure App Service")
+        return
+        
+    # Initialize components
+    content_analyzer = ContentAnalyzer(api_key)
+    recommendation_generator = RecommendationGenerator(api_key)
+    cost_calculator = CostCalculator()
+
     # Initialize session state
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
