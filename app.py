@@ -2376,9 +2376,6 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Set max upload size to 1024MB
-    st.set_option('server.maxUploadSize', 1024)
-    
     # Initialize session state
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
