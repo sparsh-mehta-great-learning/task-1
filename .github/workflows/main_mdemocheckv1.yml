@@ -1,3 +1,7 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+
 name: Build and deploy Python app to Azure Web App - mdemocheckv1
 
 on:
@@ -20,26 +24,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg portaudio19-dev
-
       - name: Create and start virtual environment
         run: |
           python -m venv venv
           source venv/bin/activate
       
-      - name: Upgrade pip
-        run: pip install --upgrade pip
-
       - name: Install dependencies
         run: pip install -r requirements.txt
+        
+      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
       - name: Zip artifact for deployment
         run: |
           zip -r release.zip . -x "venv/*" -x "__pycache__/*" -x "*.pyc" -x "*.pyo" -x "*.pyd" -x ".git/*" -x ".gitignore" -x ".env"
-          zip -u release.zip requirements.txt
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
@@ -47,7 +44,6 @@ jobs:
           name: python-app
           path: |
             release.zip
-            requirements.txt
             !venv/
 
   deploy:
@@ -66,10 +62,6 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip release.zip
 
-      - name: Install system packages in deployment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg portaudio19-dev
       
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
