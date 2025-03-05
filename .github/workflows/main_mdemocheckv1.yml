@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat packages.txt)
+
       - name: Create and start virtual environment
         run: |
           python -m venv venv
@@ -37,6 +42,8 @@ jobs:
       - name: Zip artifact for deployment
         run: |
           zip -r release.zip . -x "venv/*" -x "__pycache__/*" -x "*.pyc" -x "*.pyo" -x "*.pyd" -x ".git/*" -x ".gitignore" -x ".env"
+          # Ensure both requirements.txt and packages.txt are included
+          zip -u release.zip requirements.txt packages.txt
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
@@ -44,6 +51,8 @@ jobs:
           name: python-app
           path: |
             release.zip
+            requirements.txt
+            packages.txt
             !venv/
 
   deploy:
@@ -62,6 +71,10 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip release.zip
 
+      - name: Install system packages in deployment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat packages.txt)
       
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
