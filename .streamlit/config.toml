@@ -1,7 +1,5 @@
 [server]
 maxUploadSize = 1024
-port = 8000
-address = "0.0.0.0"
 enableXsrfProtection = false
 enableCORS = false
 
